@@ -7,3 +7,9 @@ authors = ["MaidSafe Developers <dev@maidsafe.net>"]
 
 [dependencies]
 mio = "0.5.1"
+
+[[example]]
+bench = false
+name = "sample"
+path = "examples/sample.rs"
+test = false
