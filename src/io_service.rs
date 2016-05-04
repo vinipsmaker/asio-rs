@@ -1,50 +1,66 @@
 use std::io;
 use std::collections::BTreeMap;
-use std::num::Wrapping;
-use mio::{EventLoop, EventSet, Handler, Token};
+use std::cell::RefCell;
+use std::rc::Rc;
+use mio::{EventLoop, EventSet, Handler, Sender, Token};
 //use mio::tcp::{TcpListener, TcpStream};
 use utils::Closure;
 use executor::Executor;
 
-struct IoServiceHandler {
-    pub pending_jobs: usize,
-    pub pending_msgs: BTreeMap<usize, Closure>,
-    pub next_msg: Wrapping<usize>,
+enum Message {
+    UserClosure(usize),
+    RegisterTimeout(u64, usize),
 }
 
-impl Default for IoServiceHandler {
-    fn default() -> Self {
+struct IoServiceHandler {
+    pending_jobs: Rc<RefCell<usize>>,
+    pending_msgs: Rc<RefCell<BTreeMap<usize, Closure>>>,
+}
+
+impl IoServiceHandler {
+    fn new(pending_jobs: Rc<RefCell<usize>>,
+           pending_msgs: Rc<RefCell<BTreeMap<usize, Closure>>>) -> Self {
         IoServiceHandler {
-            pending_jobs: 0,
-            pending_msgs: BTreeMap::new(),
-            next_msg: Wrapping(0),
+            pending_jobs: pending_jobs,
+            pending_msgs: pending_msgs,
         }
     }
 }
 
 impl Handler for IoServiceHandler {
     type Timeout = Closure;
-    type Message = usize;
+    type Message = Message;
 
     fn ready(&mut self, _event_loop: &mut EventLoop<Self>, _token: Token,
              _events: EventSet) {
     }
 
     fn notify(&mut self, event_loop: &mut EventLoop<Self>, msg: Self::Message) {
-        self.pending_jobs -= 1;
-        if let Some(msg) = self.pending_msgs.remove(&msg) {
-            msg.invoke();
+        *self.pending_jobs.borrow_mut() -= 1;
+        match msg {
+            Message::UserClosure(msg) => {
+                if let Some(msg) = self.pending_msgs.borrow_mut().remove(&msg) {
+                    msg.invoke();
+                }
+            }
+            Message::RegisterTimeout(timeout_ms, msg) => {
+                if let Some(msg) = self.pending_msgs.borrow_mut().remove(&msg) {
+                    event_loop.timeout_ms(msg, timeout_ms).unwrap();
+                }
+            }
         }
-        if self.pending_jobs == 0 {
+        let shutdown = *self.pending_jobs.borrow() == 0;
+        if shutdown {
             event_loop.shutdown();
         }
     }
 
     fn timeout(&mut self, event_loop: &mut EventLoop<Self>,
                timeout: Self::Timeout) {
-        self.pending_jobs -= 1;
+        *self.pending_jobs.borrow_mut() -= 1;
         timeout.invoke();
-        if self.pending_jobs == 0 {
+        let shutdown = *self.pending_jobs.borrow() == 0;
+        if shutdown {
             event_loop.shutdown();
         }
     }
@@ -59,34 +75,59 @@ impl Handler for IoServiceHandler {
 // - TimerQueue
 // - SocketReactor
 pub struct IoService {
-    event_loop: EventLoop<IoServiceHandler>,
-    handler: IoServiceHandler,
+    pending_jobs: Rc<RefCell<usize>>,
+    pending_msgs: Rc<RefCell<BTreeMap<usize, Closure>>>,
+    event_loop: Rc<RefCell<EventLoop<IoServiceHandler>>>,
+    handler: Rc<RefCell<IoServiceHandler>>,
+    msg_sender: Sender<Message>,
 }
 
 impl IoService {
     pub fn new() -> io::Result<IoService> {
+        let pending_jobs = Rc::new(RefCell::new(0));
+        let pending_msgs = Rc::new(RefCell::new(BTreeMap::new()));
+        let handler = IoServiceHandler::new(pending_jobs.clone(),
+                                            pending_msgs.clone());
+        let event_loop = try!(EventLoop::new());
+        let msg_sender = event_loop.channel();
         Ok(IoService {
-            event_loop: try!(EventLoop::new()),
-            handler: IoServiceHandler::default(),
+            pending_jobs: pending_jobs,
+            pending_msgs: pending_msgs,
+            event_loop: Rc::new(RefCell::new(event_loop)),
+            handler: Rc::new(RefCell::new(handler)),
+            msg_sender: msg_sender,
         })
     }
 
-    pub fn schedule_timeout<F>(&mut self, timeout_ms: u64, f: F)
+    pub fn schedule_timeout<F>(&self, timeout_ms: u64, f: F)
         where F : FnOnce() + 'static {
-        self.handler.pending_jobs += 1;
-        self.event_loop.timeout_ms(Closure::new(f), timeout_ms);
+        *self.pending_jobs.borrow_mut() += 2;
+        let cur = self.next_msg();
+        self.pending_msgs.borrow_mut().insert(cur, Closure::new(f));
+        self.msg_sender.send(Message::RegisterTimeout(timeout_ms, cur))
+            .unwrap();
     }
 
-    pub fn run(&mut self) {
-        self.event_loop.run(&mut self.handler);
+    pub fn run(&self) {
+        let mut handler = self.handler.borrow_mut();
+        self.event_loop.borrow_mut().run(&mut handler).unwrap();
+    }
+
+    fn next_msg(&self) -> usize {
+        let mut cur = 0;
+        let pending_msgs = self.pending_msgs.borrow();
+        while pending_msgs.contains_key(&cur) {
+            cur += 1;
+        }
+        cur
     }
 }
 
 impl Executor for IoService {
-    fn post<F : FnOnce() + 'static>(&mut self, f: F) {
-        let Wrapping(cur) = self.handler.next_msg;
-        self.handler.next_msg += Wrapping(1);
-        self.handler.pending_msgs.insert(cur, Closure::new(f));
-        self.event_loop.channel().send(cur);
+    fn post<F : FnOnce() + 'static>(&self, f: F) {
+        let cur = self.next_msg();
+        *self.pending_jobs.borrow_mut() += 1;
+        self.pending_msgs.borrow_mut().insert(cur, Closure::new(f));
+        self.msg_sender.send(Message::UserClosure(cur)).unwrap();
     }
 }
