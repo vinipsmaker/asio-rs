@@ -12,8 +12,8 @@ fn main() {
     {
         let io_service2 = io_service.clone();
         io_service.schedule_timeout(2000, move || {
-            println!(" World");
             io_service2.post(|| println!("Goodbye cruel world"));
+            println!(" World");
         });
     }
 
