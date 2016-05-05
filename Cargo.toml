@@ -1,6 +1,6 @@
 [package]
-name = "executor"
-description = "An executor is to function execution as an allocator is to allocation"
+name = "asio"
+description = "Asynchronous I/O"
 license = "GPL-3.0"
 version = "0.1.0"
 authors = ["MaidSafe Developers <dev@maidsafe.net>"]
