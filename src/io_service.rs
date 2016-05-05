@@ -6,6 +6,7 @@ use mio::{EventLoop, EventSet, Handler, Sender, Token};
 //use mio::tcp::{TcpListener, TcpStream};
 use utils::Closure;
 use executor::Executor;
+use timer_queue::TimerQueue;
 
 enum Message {
     UserClosure(usize),
@@ -72,7 +73,6 @@ impl Handler for IoServiceHandler {
 
 // TODO: break IoService into the following traits:
 //
-// - TimerQueue
 // - SocketReactor
 pub struct IoService {
     pending_jobs: Rc<RefCell<usize>>,
@@ -99,15 +99,6 @@ impl IoService {
         })
     }
 
-    pub fn schedule_timeout<F>(&self, timeout_ms: u64, f: F)
-        where F : FnOnce() + 'static {
-        *self.pending_jobs.borrow_mut() += 2;
-        let cur = self.next_msg();
-        self.pending_msgs.borrow_mut().insert(cur, Closure::new(f));
-        self.msg_sender.send(Message::RegisterTimeout(timeout_ms, cur))
-            .unwrap();
-    }
-
     pub fn run(&self) {
         let mut handler = self.handler.borrow_mut();
         self.event_loop.borrow_mut().run(&mut handler).unwrap();
@@ -129,5 +120,16 @@ impl Executor for IoService {
         *self.pending_jobs.borrow_mut() += 1;
         self.pending_msgs.borrow_mut().insert(cur, Closure::new(f));
         self.msg_sender.send(Message::UserClosure(cur)).unwrap();
+    }
+}
+
+impl TimerQueue for IoService {
+    fn schedule_timeout<F>(&self, timeout_ms: u64, f: F)
+        where F : FnOnce() + 'static {
+        *self.pending_jobs.borrow_mut() += 2;
+        let cur = self.next_msg();
+        self.pending_msgs.borrow_mut().insert(cur, Closure::new(f));
+        self.msg_sender.send(Message::RegisterTimeout(timeout_ms, cur))
+            .unwrap();
     }
 }

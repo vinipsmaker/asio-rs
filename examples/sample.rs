@@ -3,8 +3,7 @@ extern crate executor;
 use std::io;
 use std::io::Write;
 use std::rc::Rc;
-use executor::IoService;
-use executor::Executor;
+use executor::{Executor, IoService, TimerQueue};
 
 fn main() {
     let io_service = Rc::new(IoService::new().unwrap());
