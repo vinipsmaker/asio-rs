@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 pub struct Closure(Box<FnMut()>);
 
 impl Closure {
@@ -10,7 +12,16 @@ impl Closure {
         }))
     }
 
-    pub fn invoke(mut self) {
+    pub fn invoke(&mut self) {
         (self.0)()
     }
+}
+
+pub fn get_unused_idx<V>(map: &BTreeMap<usize, V>, hint: Option<usize>)
+                         -> usize {
+    let mut cur = hint.unwrap_or(0);
+    while map.contains_key(&cur) {
+        cur = cur.wrapping_add(1);
+    }
+    cur
 }

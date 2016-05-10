@@ -21,7 +21,7 @@ impl LoopScheduler {
 
     pub fn run(&mut self) {
         loop {
-            let j = {
+            let mut j = {
                 match self.pending_jobs.borrow_mut().pop_front() {
                     Some(j) => j,
                     None => break,
